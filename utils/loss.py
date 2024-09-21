@@ -7,13 +7,12 @@ def contrastive_cross_entropy_loss(q_emb, pos_emb, neg_embs, temperature=0.07):
     Calcule la loss en prenant en compte la similarité cosinus entre la question et l'article pertinent,
     ainsi que la similarité avec tous les articles négatifs durs (hard negatives).
     """
-    print(q_emb.shape, pos_emb.shape, len(neg_embs))
     pos_sim = F.cosine_similarity(q_emb, pos_emb)
     #neg_embs=torch.tensor(neg_embs).transpose(0,1)
 
     # Empiler les tenseurs transposés le long d'une nouvelle dimension
     neg_embs = torch.stack(neg_embs)
-    print(neg_embs.shape)
+    #print(neg_embs.shape)
     # Pour chaque article négatif, on répète l'embedding de la question autant de fois qu'il y a de négatifs
     neg_sims = torch.stack([F.cosine_similarity(q_emb, neg_embs[:,i,:]) for i in range(neg_embs.size(1))], dim=1)
 
