@@ -1,15 +1,12 @@
 # utils/dataset.py
 import pandas as pd
 import torch
-from torch.utils.data import Dataset
-import json
+from torch.utils.data import Dataset, DataLoader
 import random
 
 class RetrieverDataset(Dataset):
-    def __init__(self, train_csv, hard_neg_json, articles_df, tokenizer, max_length):
+    def __init__(self, train_csv, articles_df, tokenizer, max_length):
         self.data = pd.read_csv(train_csv)
-        with open(hard_neg_json, 'r') as f:
-            self.hard_neg = json.load(f)  # Chargement des négatifs durs depuis le fichier JSON
         self.articles_df = articles_df
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -52,28 +49,45 @@ class RetrieverDataset(Dataset):
             positive_text, max_length=self.max_length, padding='max_length', truncation=True, return_tensors="pt"
         )
 
-        # Extraction des articles négatifs durs (limite à 10 articles négatifs)
-        negative_article_ids = self.hard_neg.get(question_id, [])[:10]
-        negative_encs = []
-        for neg_id in negative_article_ids:
-            if neg_id in self.articles_df['id'].values:
-                negative_article = self.articles_df[self.articles_df['id'] == neg_id].iloc[0]
-                negative_text = f"{negative_article['section']} {negative_article['subsection']} {negative_article['article']}"
-                # Tokenisation de chaque article négatif
-                negative_enc = self.tokenizer.encode_plus(
-                    negative_text, max_length=self.max_length, padding='max_length', truncation=True, return_tensors="pt"
-                )
-                negative_encs.append(negative_enc)
-
-        # Conversion des tokenizations en tensors
-        input_ids_neg = torch.stack([enc['input_ids'].squeeze(0) for enc in negative_encs])
-        attention_mask_neg = torch.stack([enc['attention_mask'].squeeze(0) for enc in negative_encs])
-
         return {
             'input_ids_q': question_enc['input_ids'].squeeze(0),
             'attention_mask_q': question_enc['attention_mask'].squeeze(0),
             'input_ids_pos': positive_enc['input_ids'].squeeze(0),
             'attention_mask_pos': positive_enc['attention_mask'].squeeze(0),
-            'input_ids_neg': input_ids_neg,  # 10 articles négatifs
-            'attention_mask_neg': attention_mask_neg
+            'article_id_pos': positive_article_id  # Utilisé pour construire les négatifs
         }
+
+def collate_fn(batch):
+    """
+    Custom collate function to create in-batch negatives.
+    """
+    input_ids_q = torch.stack([item['input_ids_q'] for item in batch])
+    attention_mask_q = torch.stack([item['attention_mask_q'] for item in batch])
+    input_ids_pos = torch.stack([item['input_ids_pos'] for item in batch])
+    attention_mask_pos = torch.stack([item['attention_mask_pos'] for item in batch])
+
+    # Construire les articles négatifs (in-batch negatives)
+    article_ids_pos = [item['article_id_pos'] for item in batch]
+    input_ids_neg = []
+    attention_mask_neg = []
+
+    for i, item in enumerate(batch):
+        # Exclure l'article positif de l'exemple actuel et utiliser les articles des autres questions comme négatifs
+        neg_items = [input_ids_pos[j] for j in range(len(batch)) if j != i]
+        neg_attention_masks = [attention_mask_pos[j] for j in range(len(batch)) if j != i]
+        
+        input_ids_neg.append(torch.stack(neg_items))  # N-1 négatifs
+        attention_mask_neg.append(torch.stack(neg_attention_masks))
+
+    input_ids_neg = torch.stack(input_ids_neg)
+    attention_mask_neg = torch.stack(attention_mask_neg)
+
+    return {
+        'input_ids_q': input_ids_q,
+        'attention_mask_q': attention_mask_q,
+        'input_ids_pos': input_ids_pos,
+        'attention_mask_pos': attention_mask_pos,
+        'input_ids_neg': input_ids_neg,  # N-1 articles négatifs
+        'attention_mask_neg': attention_mask_neg
+    }
+
